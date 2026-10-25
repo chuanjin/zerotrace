@@ -53,4 +53,12 @@ fi
 # Verify installation and run initial setup if not yet initialized
 "$INSTALL_DIR/$BINARY_NAME" version
 echo ""
-info "Run 'zerotrace init' to generate your anonymous Account ID and local E2EE keys."
+info "Initializing local configuration & background service..."
+"$INSTALL_DIR/$BINARY_NAME" init
+"$INSTALL_DIR/$BINARY_NAME" daemon install || true
+"$INSTALL_DIR/$BINARY_NAME" hook install || true
+
+echo ""
+success "ZeroTrace is running in the background (:9000)!"
+info "Open a new shell or run 'source ~/.zshrc' to start using Claude Code / OpenAI with zero-leak proxy."
+
