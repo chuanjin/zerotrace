@@ -9,6 +9,7 @@ import (
 
 	"github.com/chuanjin/zerotrace/agent/internal/breaker"
 	"github.com/chuanjin/zerotrace/agent/internal/config"
+	"github.com/chuanjin/zerotrace/agent/internal/hook"
 	"github.com/chuanjin/zerotrace/agent/internal/masker"
 	"github.com/chuanjin/zerotrace/agent/internal/proxy"
 	"github.com/chuanjin/zerotrace/agent/internal/storage"
@@ -25,6 +26,8 @@ func main() {
 	switch cmd {
 	case "init":
 		runInit()
+	case "hook":
+		runHook()
 	case "s3-setup":
 		runS3Setup()
 	case "serve", "start":
@@ -243,21 +246,63 @@ func runExportCompliance() {
 	fmt.Fprintf(os.Stderr, "\n✓ Saved compliance bundle to %s\n", outPath)
 }
 
+func runHook() {
+	sub := "install"
+	if len(os.Args) > 2 {
+		sub = os.Args[2]
+	}
+	cfg, err := config.LoadOrCreate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	switch sub {
+	case "install":
+		updated, err := hook.Install("", cfg.ListenAddr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Hook install error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, p := range updated {
+			fmt.Printf("✓ Injected ZeroTrace proxy exports into %s\n", p)
+		}
+		fmt.Println("  Run `source ~/.zshrc` (or open a new terminal) to activate.")
+	case "uninstall", "remove":
+		cleaned, err := hook.Uninstall("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Hook uninstall error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, p := range cleaned {
+			fmt.Printf("✓ Removed ZeroTrace proxy exports from %s\n", p)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "Usage: zerotrace hook [install|uninstall]")
+		os.Exit(1)
+	}
+}
+
 func runUninstall() {
+	cleaned, _ := hook.Uninstall("")
+	for _, p := range cleaned {
+		fmt.Printf("✓ Stripped ZeroTrace hook from %s\n", p)
+	}
 	base := config.DefaultBaseDir()
 	fmt.Printf("Uninstalling ZeroTrace local configuration at %s...\n", base)
 	_ = os.RemoveAll(base)
 	fmt.Println("✓ Removed local cache and config. Your S3/R2 buckets remain untouched.")
-	fmt.Println("✓ Remember to remove ANTHROPIC_BASE_URL / OPENAI_BASE_URL from your shell profile.")
 }
 
 func printHelp() {
 	fmt.Println("ZeroTrace — The Mullvad of AI & Cloud Observability (€10/mo flat, Zero Data Egress)")
 	fmt.Println("\nUsage:")
 	fmt.Println("  zerotrace init               Initialize anonymous Account ID, E2EE keys & guardrails")
+	fmt.Println("  zerotrace hook install       Automatically inject proxy exports into ~/.zshrc / ~/.bashrc")
+	fmt.Println("  zerotrace hook uninstall     Cleanly strip proxy exports from shell profiles")
+	fmt.Println("  zerotrace s3-setup           Configure BYOC S3/R2 bucket and DuckDB-Wasm CORS policy")
 	fmt.Println("  zerotrace serve              Start local GDPR-scrubbing & circuit-breaking proxy (:9000)")
 	fmt.Println("  zerotrace status             Display real-time spend, saved loop costs & PII redactions")
 	fmt.Println("  zerotrace verify             Verify SHA-256 cryptographic integrity of audit logs")
 	fmt.Println("  zerotrace export-compliance  Generate EU AI Act Art. 12 & GDPR compliance evidence JSON")
-	fmt.Println("  zerotrace uninstall          Cleanly remove local config and restore direct API routing")
+	fmt.Println("  zerotrace uninstall          Cleanly remove hooks, local config and restore direct API routing")
 }
