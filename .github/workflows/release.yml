@@ -1,0 +1,59 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Run End-to-End Tests
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        working-directory: ./agent
+        run: go test -v ./...
+
+      - name: Build Reproducible Binary
+        working-directory: ./agent
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -ldflags="-s -w" \
+            -o ../zerotrace-${{ matrix.goos }}-${{ matrix.goarch }} \
+            ./cmd/zerotrace
+          sha256sum ../zerotrace-${{ matrix.goos }}-${{ matrix.goarch }} > ../zerotrace-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+
+      - name: Upload Release Assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            zerotrace-${{ matrix.goos }}-${{ matrix.goarch }}
+            zerotrace-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+          generate_release_notes: true
