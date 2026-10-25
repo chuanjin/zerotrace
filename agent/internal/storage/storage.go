@@ -27,12 +27,15 @@ type AuditEvent struct {
 	Provider         string         `json:"provider" parquet:"provider"`
 	Model            string         `json:"model" parquet:"model"`
 	Repo             string         `json:"repo,omitempty" parquet:"repo"`
-	TokensIn         int            `json:"tokens_in" parquet:"tokens_in"`
-	TokensCacheRead  int            `json:"tokens_cache_read" parquet:"tokens_cache_read"`
-	TokensOut        int            `json:"tokens_out" parquet:"tokens_out"`
-	CostUSD          float64        `json:"cost_usd" parquet:"cost_usd"`
-	SavedUSD         float64        `json:"saved_usd" parquet:"saved_usd"` // Money saved when circuit breaker trips
-	LatencyMs        int64          `json:"latency_ms" parquet:"latency_ms"`
+	TokensIn          int            `json:"tokens_in" parquet:"tokens_in"`
+	TokensCacheRead   int            `json:"tokens_cache_read" parquet:"tokens_cache_read"`
+	TokensCacheWrite  int            `json:"tokens_cache_write" parquet:"tokens_cache_write"`
+	TokensOut         int            `json:"tokens_out" parquet:"tokens_out"`
+	CostUSD           float64        `json:"cost_usd" parquet:"cost_usd"`
+	SavedUSD          float64        `json:"saved_usd" parquet:"saved_usd"`           // Money saved when circuit breaker trips
+	CacheWastedUSD    float64        `json:"cache_wasted_usd" parquet:"cache_wasted_usd"` // Extra cost caused by cache churn/rebuild
+	CacheChurnAlert   bool           `json:"cache_churn_alert" parquet:"cache_churn_alert"`
+	LatencyMs         int64          `json:"latency_ms" parquet:"latency_ms"`
 	Status           string         `json:"status" parquet:"status"` // "OK", "DOOM_LOOP_DETECTED", "SESSION_BUDGET_EXCEEDED"
 	PIIRedactions    int            `json:"pii_redactions" parquet:"pii_redactions"`
 	PIICategories    map[string]int `json:"pii_categories,omitempty" parquet:"-"`
@@ -47,6 +50,8 @@ type Manifest struct {
 	TotalRequests        int64          `json:"total_requests"`
 	TotalCostUSD         float64        `json:"total_cost_usd"`
 	TotalSavedUSD        float64        `json:"total_saved_usd"`
+	TotalCacheWastedUSD  float64        `json:"total_cache_wasted_usd"`
+	TotalCacheChurns     int64          `json:"total_cache_churns"`
 	TotalPIIRedactions   int64          `json:"total_pii_redactions"`
 	TotalLoopsBlocked    int64          `json:"total_loops_blocked"`
 	PIICategoryBreakdown map[string]int `json:"pii_category_breakdown"`
@@ -205,6 +210,10 @@ func (s *Store) Append(ev AuditEvent, rawSanitizedPrompt string) (AuditEvent, er
 	s.manifest.TotalRequests = s.seq
 	s.manifest.TotalCostUSD += ev.CostUSD
 	s.manifest.TotalSavedUSD += ev.SavedUSD
+	s.manifest.TotalCacheWastedUSD += ev.CacheWastedUSD
+	if ev.CacheChurnAlert {
+		s.manifest.TotalCacheChurns++
+	}
 	s.manifest.TotalPIIRedactions += int64(ev.PIIRedactions)
 	if ev.Status != "OK" {
 		s.manifest.TotalLoopsBlocked++

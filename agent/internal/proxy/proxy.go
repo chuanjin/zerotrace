@@ -36,9 +36,9 @@ func NewServer(cfg *config.Config, m *masker.Masker, b *breaker.Breaker, s *stor
 }
 
 // Pricing table per 1M tokens (Input / Output)
-func estimateCost(model string, tokensIn, tokensOut int) float64 {
+func modelRates(model string) (inRate, outRate float64) {
 	m := strings.ToLower(model)
-	inRate, outRate := 3.0, 15.0 // Default Sonnet-class
+	inRate, outRate = 3.0, 15.0 // Default Sonnet-class
 	switch {
 	case strings.Contains(m, "opus"):
 		inRate, outRate = 15.0, 75.0
@@ -47,7 +47,21 @@ func estimateCost(model string, tokensIn, tokensOut int) float64 {
 	case strings.Contains(m, "gpt-4") || strings.Contains(m, "o3"):
 		inRate, outRate = 5.0, 15.0
 	}
-	return (float64(tokensIn)/1_000_000.0)*inRate + (float64(tokensOut)/1_000_000.0)*outRate
+	return inRate, outRate
+}
+
+func estimateCostWithCache(model string, uncachedIn, cacheRead, cacheWrite, tokensOut int) float64 {
+	inRate, outRate := modelRates(model)
+	// Anthropic/OpenAI standard: Cache Read = 0.1x input rate, Cache Write = 1.25x input rate
+	costIn := (float64(uncachedIn) / 1_000_000.0) * inRate
+	costCacheRead := (float64(cacheRead) / 1_000_000.0) * (inRate * 0.10)
+	costCacheWrite := (float64(cacheWrite) / 1_000_000.0) * (inRate * 1.25)
+	costOut := (float64(tokensOut) / 1_000_000.0) * outRate
+	return costIn + costCacheRead + costCacheWrite + costOut
+}
+
+func estimateCost(model string, tokensIn, tokensOut int) float64 {
+	return estimateCostWithCache(model, tokensIn, 0, 0, tokensOut)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -195,14 +209,17 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 			return
 		}
 
-		// 3. Forward to Upstream (or Mock Upstream if X-ZeroTrace-Mock header or mock upstream URL is set)
+		// 3. Forward to Upstream (supports both standard JSON and Server-Sent Events SSE streaming)
 		var respBody string
 		statusCode := http.StatusOK
 		tokensOut := 64
+		cacheReadTokens := 0
+		cacheWriteTokens := 0
+		uncachedInTokens := estTokensIn
+		isStream, _ := parsed["stream"].(bool)
 
 		if r.Header.Get("X-ZeroTrace-Mock") == "1" || strings.HasPrefix(s.cfg.UpstreamAnthropic, "mock://") {
-			// Built-in deterministic echo/simulator for offline verification & testing
-			respBody = fmt.Sprintf(`{"id":"msg_zt_sim","model":%q,"role":"assistant","content":[{"type":"text","text":"Processed sanitized request cleanly. Echoing reference: %s"}],"usage":{"input_tokens":%d,"output_tokens":48}}`,
+			respBody = fmt.Sprintf(`{"id":"msg_zt_sim","model":%q,"role":"assistant","content":[{"type":"text","text":"Processed sanitized request cleanly. Echoing reference: %s"}],"usage":{"input_tokens":%d,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":48}}`,
 				model, extractPreview(sanitizedBody), estTokensIn)
 			tokensOut = 48
 		} else {
@@ -232,27 +249,105 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 			}
 			defer upResp.Body.Close()
 			statusCode = upResp.StatusCode
+
+			isSSE := isStream || strings.Contains(strings.ToLower(upResp.Header.Get("Content-Type")), "text/event-stream")
+			if isSSE {
+				// Stream response chunks through cross-boundary StreamUnmasker
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("X-ZeroTrace-Redactions", fmt.Sprintf("%d", mStats.TotalRedactions))
+				w.WriteHeader(statusCode)
+				flusher, _ := w.(http.Flusher)
+
+				su := s.masker.NewStreamUnmasker()
+				var fullStreamBuf strings.Builder
+				buf := make([]byte, 128)
+				for {
+					n, readErr := upResp.Body.Read(buf)
+					if n > 0 {
+						chunkStr := string(buf[:n])
+						fullStreamBuf.WriteString(chunkStr)
+						outChunk := chunkStr
+						if s.cfg.GDPRMaskingEnabled {
+							outChunk = su.ProcessChunk(chunkStr)
+						}
+						if len(outChunk) > 0 {
+							_, _ = w.Write([]byte(outChunk))
+							if flusher != nil {
+								flusher.Flush()
+							}
+						}
+					}
+					if readErr != nil {
+						break
+					}
+				}
+				if s.cfg.GDPRMaskingEnabled {
+					if tail := su.Flush(); len(tail) > 0 {
+						_, _ = w.Write([]byte(tail))
+						if flusher != nil {
+							flusher.Flush()
+						}
+					}
+				}
+				respBody = fullStreamBuf.String()
+				tokensOut = len(respBody) / 4
+				inTok, crTok, cwTok, outTok := parseUsageMetrics(respBody, estTokensIn, tokensOut)
+				uncachedInTokens, cacheReadTokens, cacheWriteTokens, tokensOut = inTok, crTok, cwTok, outTok
+				inRate, _ := modelRates(model)
+				churnAlert, wastedUSD := s.breaker.EvaluateCacheChurn(sessionID, cacheReadTokens, cacheWriteTokens, uncachedInTokens, inRate)
+				actualCost := estimateCostWithCache(model, uncachedInTokens, cacheReadTokens, cacheWriteTokens, tokensOut)
+
+				_, _ = s.store.Append(storage.AuditEvent{
+					SessionID:        sessionID,
+					Provider:         provider,
+					Model:            model,
+					Repo:             repo,
+					TokensIn:         uncachedInTokens,
+					TokensCacheRead:  cacheReadTokens,
+					TokensCacheWrite: cacheWriteTokens,
+					TokensOut:        tokensOut,
+					CostUSD:          actualCost,
+					SavedUSD:         0,
+					CacheWastedUSD:   wastedUSD,
+					CacheChurnAlert:  churnAlert,
+					LatencyMs:        time.Since(start).Milliseconds(),
+					Status:           "OK",
+					PIIRedactions:    mStats.TotalRedactions,
+					PIICategories:    mStats.ByCategory,
+				}, sanitizedBody)
+				return
+			}
+
 			b, _ := io.ReadAll(upResp.Body)
 			respBody = string(b)
 			tokensOut = len(respBody) / 4
 		}
 
-		actualCost := estimateCost(model, estTokensIn, tokensOut)
+		inTok, crTok, cwTok, outTok := parseUsageMetrics(respBody, estTokensIn, tokensOut)
+		uncachedInTokens, cacheReadTokens, cacheWriteTokens, tokensOut = inTok, crTok, cwTok, outTok
+		inRate, _ := modelRates(model)
+		churnAlert, wastedUSD := s.breaker.EvaluateCacheChurn(sessionID, cacheReadTokens, cacheWriteTokens, uncachedInTokens, inRate)
+		actualCost := estimateCostWithCache(model, uncachedInTokens, cacheReadTokens, cacheWriteTokens, tokensOut)
 
 		// 4. Append Zero-Knowledge Encrypted + SHA-256 Chained Audit Event
 		ev, _ := s.store.Append(storage.AuditEvent{
-			SessionID:     sessionID,
-			Provider:      provider,
-			Model:         model,
-			Repo:          repo,
-			TokensIn:      estTokensIn,
-			TokensOut:     tokensOut,
-			CostUSD:       actualCost,
-			SavedUSD:      0,
-			LatencyMs:     time.Since(start).Milliseconds(),
-			Status:        "OK",
-			PIIRedactions: mStats.TotalRedactions,
-			PIICategories: mStats.ByCategory,
+			SessionID:        sessionID,
+			Provider:         provider,
+			Model:            model,
+			Repo:             repo,
+			TokensIn:         uncachedInTokens,
+			TokensCacheRead:  cacheReadTokens,
+			TokensCacheWrite: cacheWriteTokens,
+			TokensOut:        tokensOut,
+			CostUSD:          actualCost,
+			SavedUSD:         0,
+			CacheWastedUSD:   wastedUSD,
+			CacheChurnAlert:  churnAlert,
+			LatencyMs:        time.Since(start).Milliseconds(),
+			Status:           "OK",
+			PIIRedactions:    mStats.TotalRedactions,
+			PIICategories:    mStats.ByCategory,
 		}, sanitizedBody)
 
 		// 5. Unmask Pseudonyms in Response Before Returning to Developer
@@ -264,9 +359,39 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-ZeroTrace-Event-Hash", ev.EventHash)
 		w.Header().Set("X-ZeroTrace-Redactions", fmt.Sprintf("%d", mStats.TotalRedactions))
+		if churnAlert {
+			w.Header().Set("X-ZeroTrace-Cache-Churn", fmt.Sprintf("ALERT:wasted_usd=%.4f", wastedUSD))
+		}
 		w.WriteHeader(statusCode)
 		_, _ = w.Write([]byte(finalResp))
 	}
+}
+
+// parseUsageMetrics extracts Anthropic / OpenAI prompt cache metrics from JSON or SSE payloads.
+func parseUsageMetrics(respBody string, defaultIn, defaultOut int) (inTok, cacheRead, cacheWrite, outTok int) {
+	inTok, outTok = defaultIn, defaultOut
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(respBody), &payload); err == nil {
+		if u, ok := payload["usage"].(map[string]any); ok {
+			if v, ok := u["input_tokens"].(float64); ok {
+				inTok = int(v)
+			} else if v, ok := u["prompt_tokens"].(float64); ok {
+				inTok = int(v)
+			}
+			if v, ok := u["cache_read_input_tokens"].(float64); ok {
+				cacheRead = int(v)
+			}
+			if v, ok := u["cache_creation_input_tokens"].(float64); ok {
+				cacheWrite = int(v)
+			}
+			if v, ok := u["output_tokens"].(float64); ok {
+				outTok = int(v)
+			} else if v, ok := u["completion_tokens"].(float64); ok {
+				outTok = int(v)
+			}
+		}
+	}
+	return inTok, cacheRead, cacheWrite, outTok
 }
 
 func extractPreview(s string) string {

@@ -69,7 +69,7 @@ func (m *Masker) MaskOutbound(input string) (string, MaskStats) {
 			return match
 		}
 		tag := m.shortTag("key", match)
-		fake := fmt.Sprintf("sk_zt_masked_%s", tag)
+		fake := fmt.Sprintf("zt_masked_key_%s", tag)
 		m.registerPair(match, fake)
 		stats.TotalRedactions++
 		stats.ByCategory["SECRET_KEY"]++
@@ -137,4 +137,63 @@ func (m *Masker) UnmaskInbound(input string) string {
 		}
 	}
 	return out
+}
+
+// StreamUnmasker handles cross-chunk boundary PII unmasking for Server-Sent Events (SSE) / chunked streams.
+// When an LLM streams tokens likeChunk1("Send to u_8f9a") + Chunk2("12b4@masked.zerotrace.eu"),
+// StreamUnmasker holds back any trailing suffix that matches a prefix of a known pseudonym until the next chunk arrives.
+type StreamUnmasker struct {
+	masker  *Masker
+	pending string
+}
+
+func (m *Masker) NewStreamUnmasker() *StreamUnmasker {
+	return &StreamUnmasker{masker: m}
+}
+
+func (su *StreamUnmasker) ProcessChunk(chunk string) string {
+	combined := su.pending + chunk
+	su.pending = ""
+
+	// First unmask any complete pseudonyms now present in combined
+	combined = su.masker.UnmaskInbound(combined)
+
+	// Check if any suffix of `combined` (up to max pseudonym length 36) is a prefix of any registered pseudonym
+	holdbackLen := su.findLongestPrefixSuffix(combined)
+	if holdbackLen > 0 {
+		safePart := combined[:len(combined)-holdbackLen]
+		su.pending = combined[len(combined)-holdbackLen:]
+		return safePart
+	}
+	return combined
+}
+
+func (su *StreamUnmasker) Flush() string {
+	if su.pending == "" {
+		return ""
+	}
+	out := su.masker.UnmaskInbound(su.pending)
+	su.pending = ""
+	return out
+}
+
+func (su *StreamUnmasker) findLongestPrefixSuffix(s string) int {
+	su.masker.mu.RLock()
+	defer su.masker.mu.RUnlock()
+	if len(su.masker.reverse) == 0 || len(s) == 0 {
+		return 0
+	}
+	maxCheck := 36
+	if len(s) < maxCheck {
+		maxCheck = len(s)
+	}
+	for l := maxCheck; l >= 1; l-- {
+		suffix := s[len(s)-l:]
+		for fake := range su.masker.reverse {
+			if len(fake) > l && strings.HasPrefix(fake, suffix) {
+				return l
+			}
+		}
+	}
+	return 0
 }

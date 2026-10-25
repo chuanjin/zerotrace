@@ -174,6 +174,7 @@ func runStatus() {
 	fmt.Printf("│  Total Intercepted Calls : %-37d │\n", m.TotalRequests)
 	fmt.Printf("│  Actual Token Spend      : $%-36.4f │\n", m.TotalCostUSD)
 	fmt.Printf("│  Saved by Doom-Breaker   : $%-36.4f │\n", m.TotalSavedUSD)
+	fmt.Printf("│  Cache Churn Wasted      : $%-16.4f (%2d churn alerts) │\n", m.TotalCacheWastedUSD, m.TotalCacheChurns)
 	fmt.Printf("│  Runaway Loops Halted    : %-37d │\n", m.TotalLoopsBlocked)
 	fmt.Printf("│  GDPR PII Redactions     : %-37d │\n", m.TotalPIIRedactions)
 	fmt.Printf("│  EU AI Act Art.12 Chain  : %-37s │\n", chainStatus)
