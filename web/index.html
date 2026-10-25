@@ -147,14 +147,22 @@
     async function syncParquetToDuckDB() {
       if (!db || !conn) return;
       const base = document.getElementById('endpoint-input').value.replace(/\/$/, '');
+      const outEl = document.getElementById('sql-result');
       try {
         const res = await fetch(base + '/telemetry.parquet');
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (res.status === 404) {
+            outEl.textContent = 'ℹ️ No telemetry events recorded yet. Run a prompt through your proxy to generate telemetry.parquet.';
+          } else {
+            outEl.textContent = `⚠️ Failed to fetch telemetry.parquet (HTTP ${res.status}). Ensure zerotrace serve is running.`;
+          }
+          return;
+        }
         const buf = new Uint8Array(await res.arrayBuffer());
         await db.registerFileBuffer('telemetry.parquet', buf);
         await window.runDuckDBQuery();
       } catch (e) {
-        console.warn('Parquet fetch skipped:', e);
+        outEl.textContent = '⚠️ Cannot connect to ' + base + '. Ensure `zerotrace serve` is running.';
       }
     }
 
@@ -184,15 +192,22 @@
 
     async function loadTelemetry() {
       const base = document.getElementById('endpoint-input').value.replace(/\/$/, '');
+      const outEl = document.getElementById('sql-result');
       try {
         const res = await fetch(base + '/api/manifest');
+        if (!res.ok) {
+          outEl.textContent = `⚠️ Agent endpoint ${base} responded with HTTP ${res.status}.`;
+          return;
+        }
         currentManifest = await res.json();
         renderManifest(currentManifest);
         if (window.syncParquetToDuckDB) {
           await window.syncParquetToDuckDB();
         }
       } catch (e) {
-        console.warn("Live daemon not reachable", e);
+        if (outEl) {
+          outEl.textContent = '⚠️ Cannot connect to ' + base + '. Please start the daemon with `zerotrace serve` or `zerotrace daemon install`.';
+        }
       }
     }
 
