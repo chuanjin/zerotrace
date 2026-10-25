@@ -9,6 +9,7 @@ import (
 
 	"github.com/chuanjin/zerotrace/agent/internal/breaker"
 	"github.com/chuanjin/zerotrace/agent/internal/config"
+	"github.com/chuanjin/zerotrace/agent/internal/daemon"
 	"github.com/chuanjin/zerotrace/agent/internal/hook"
 	"github.com/chuanjin/zerotrace/agent/internal/masker"
 	"github.com/chuanjin/zerotrace/agent/internal/proxy"
@@ -26,6 +27,8 @@ func main() {
 	switch cmd {
 	case "init":
 		runInit()
+	case "daemon":
+		runDaemon()
 	case "hook":
 		runHook()
 	case "s3-setup":
@@ -282,7 +285,35 @@ func runHook() {
 	}
 }
 
+func runDaemon() {
+	sub := "install"
+	if len(os.Args) > 2 {
+		sub = os.Args[2]
+	}
+	switch sub {
+	case "install", "enable":
+		path, err := daemon.Install("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Daemon install error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ ZeroTrace background daemon installed and started: %s\n", path)
+	case "uninstall", "disable", "stop":
+		path, err := daemon.Uninstall()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Daemon uninstall error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ ZeroTrace background daemon stopped and removed: %s\n", path)
+	default:
+		fmt.Fprintln(os.Stderr, "Usage: zerotrace daemon [install|uninstall]")
+		os.Exit(1)
+	}
+}
+
 func runUninstall() {
+	_, _ = daemon.Uninstall()
+	fmt.Println("✓ Stopped and removed system background service.")
 	cleaned, _ := hook.Uninstall("")
 	for _, p := range cleaned {
 		fmt.Printf("✓ Stripped ZeroTrace hook from %s\n", p)
@@ -297,6 +328,8 @@ func printHelp() {
 	fmt.Println("ZeroTrace — The Mullvad of AI & Cloud Observability (€10/mo flat, Zero Data Egress)")
 	fmt.Println("\nUsage:")
 	fmt.Println("  zerotrace init               Initialize anonymous Account ID, E2EE keys & guardrails")
+	fmt.Println("  zerotrace daemon install     Register and start background service (systemd/launchd)")
+	fmt.Println("  zerotrace daemon uninstall   Stop and remove background service")
 	fmt.Println("  zerotrace hook install       Automatically inject proxy exports into ~/.zshrc / ~/.bashrc")
 	fmt.Println("  zerotrace hook uninstall     Cleanly strip proxy exports from shell profiles")
 	fmt.Println("  zerotrace s3-setup           Configure BYOC S3/R2 bucket and DuckDB-Wasm CORS policy")
@@ -304,5 +337,5 @@ func printHelp() {
 	fmt.Println("  zerotrace status             Display real-time spend, saved loop costs & PII redactions")
 	fmt.Println("  zerotrace verify             Verify SHA-256 cryptographic integrity of audit logs")
 	fmt.Println("  zerotrace export-compliance  Generate EU AI Act Art. 12 & GDPR compliance evidence JSON")
-	fmt.Println("  zerotrace uninstall          Cleanly remove hooks, local config and restore direct API routing")
+	fmt.Println("  zerotrace uninstall          Cleanly remove daemon, hooks, local config and restore direct API routing")
 }
