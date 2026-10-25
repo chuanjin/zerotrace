@@ -54,6 +54,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/manifest", s.handleManifest)
+	mux.HandleFunc("/api/telemetry.parquet", s.handleParquet)
+	mux.HandleFunc("/telemetry.parquet", s.handleParquet)
 	mux.HandleFunc("/api/verify", s.handleVerify)
 	mux.HandleFunc("/anthropic/", s.handleProxy("anthropic"))
 	mux.HandleFunc("/openai/", s.handleProxy("openai"))
@@ -66,8 +68,9 @@ func (s *Server) Handler() http.Handler {
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, anthropic-version, X-ZeroTrace-Session, X-ZeroTrace-Repo")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, Authorization, x-api-key, anthropic-version, X-ZeroTrace-Session, X-ZeroTrace-Repo")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, ETag")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -89,6 +92,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(s.store.GetManifest())
+}
+
+// handleParquet serves telemetry.parquet with full HTTP Range support so DuckDB-Wasm httpfs can query it directly.
+func (s *Server) handleParquet(w http.ResponseWriter, r *http.Request) {
+	data, err := s.store.GetParquetBytes()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.apache.parquet")
+	w.Header().Set("Accept-Ranges", "bytes")
+	http.ServeContent(w, r, "telemetry.parquet", time.Now(), bytes.NewReader(data))
 }
 
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {

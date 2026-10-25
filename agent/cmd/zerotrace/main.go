@@ -25,6 +25,8 @@ func main() {
 	switch cmd {
 	case "init":
 		runInit()
+	case "s3-setup":
+		runS3Setup()
 	case "serve", "start":
 		runServe()
 	case "status", "stats":
@@ -78,12 +80,74 @@ func runServe() {
 		fmt.Fprintf(os.Stderr, "Failed to init storage: %v\n", err)
 		os.Exit(1)
 	}
+	if cfg.Storage.Mode == "s3" {
+		s3c := storage.NewS3Client(cfg.Storage)
+		st.SetS3Client(s3c)
+		fmt.Printf("☁️  BYOC S3/R2 Direct Parquet Sync Enabled -> %s/%s\n", cfg.Storage.Endpoint, cfg.Storage.Bucket)
+	}
 	srv := proxy.NewServer(cfg, m, b, st)
 	fmt.Printf("🛡️  ZeroTrace Agent %s listening on http://%s (Account: %s)\n", version, cfg.ListenAddr, cfg.AccountID)
 	if err := http.ListenAndServe(cfg.ListenAddr, srv.Handler()); err != nil {
 		fmt.Fprintf(os.Stderr, "Server stopped: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runS3Setup() {
+	cfg, err := config.LoadOrCreate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	// Accept flags or environment variables for non-interactive setup
+	for i := 2; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--endpoint":
+			if i+1 < len(os.Args) {
+				cfg.Storage.Endpoint = os.Args[i+1]
+				i++
+			}
+		case "--bucket":
+			if i+1 < len(os.Args) {
+				cfg.Storage.Bucket = os.Args[i+1]
+				i++
+			}
+		case "--region":
+			if i+1 < len(os.Args) {
+				cfg.Storage.Region = os.Args[i+1]
+				i++
+			}
+		case "--access-key":
+			if i+1 < len(os.Args) {
+				cfg.Storage.AccessKey = os.Args[i+1]
+				i++
+			}
+		case "--secret-key":
+			if i+1 < len(os.Args) {
+				cfg.Storage.SecretKey = os.Args[i+1]
+				i++
+			}
+		}
+	}
+	if cfg.Storage.Endpoint == "" {
+		fmt.Fprintln(os.Stderr, "Usage: zerotrace s3-setup --endpoint <https://...> --bucket <name> --access-key <key> --secret-key <secret> [--region auto]")
+		os.Exit(1)
+	}
+	cfg.Storage.Mode = "s3"
+	if cfg.Storage.Region == "" {
+		cfg.Storage.Region = "auto"
+	}
+	if err := config.Save(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed saving config: %v\n", err)
+		os.Exit(1)
+	}
+	s3c := storage.NewS3Client(cfg.Storage)
+	if err := s3c.EnsureBucketAndCORS(); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ S3/R2 provisioning error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✓ Configured BYOC S3/R2 bucket %q at %s\n", cfg.Storage.Bucket, cfg.Storage.Endpoint)
+	fmt.Println("✓ Applied DuckDB-Wasm browser CORS policy (GET/HEAD Range headers exposed)")
 }
 
 func runStatus() {

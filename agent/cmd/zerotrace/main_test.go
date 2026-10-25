@@ -119,4 +119,60 @@ func TestZeroTraceEndToEnd(t *testing.T) {
 	if count != 3 || head == "" {
 		t.Fatalf("expected 3 chained audit events, got %d (head=%s)", count, head)
 	}
+
+	// 5. Verify Apache Parquet v2 generation & HTTP Range serving for DuckDB-Wasm
+	pResp, err := http.Get(srv.URL + "/telemetry.parquet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pBytes, _ := io.ReadAll(pResp.Body)
+	pResp.Body.Close()
+	if len(pBytes) < 4 || string(pBytes[:4]) != "PAR1" || string(pBytes[len(pBytes)-4:]) != "PAR1" {
+		t.Fatalf("expected valid Apache Parquet file (PAR1 magic bytes), got len=%d", len(pBytes))
+	}
+
+	// 6. Verify BYOC S3/R2 SigV4 upload & CORS provisioning against a mock S3 server
+	var s3Objects = make(map[string]int)
+	var corsConfigured bool
+	mockS3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.URL.RawQuery == "cors=" {
+			corsConfigured = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		s3Objects[r.URL.Path] = len(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockS3.Close()
+
+	s3c := storage.NewS3Client(config.StorageConf{
+		Mode:      "s3",
+		Endpoint:  mockS3.URL,
+		Bucket:    "zerotrace-eu-vault",
+		Region:    "eu-north-1",
+		AccessKey: "AKIAIOSFODNN7EXAMPLE",
+		SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	})
+	if err := s3c.EnsureBucketAndCORS(); err != nil {
+		t.Fatalf("S3 EnsureBucketAndCORS failed: %v", err)
+	}
+	if !corsConfigured {
+		t.Errorf("expected S3 CORS configuration to be applied")
+	}
+	st.SetS3Client(s3c)
+
+	// Trigger one more call on a fresh session to verify live S3 Parquet upload
+	req4, _ := http.NewRequest("POST", srv.URL+"/anthropic/v1/messages", bytes.NewBufferString(sensitivePrompt))
+	req4.Header.Set("X-ZeroTrace-Session", "sess-s3-sync")
+	resp4, _ := http.DefaultClient.Do(req4)
+	resp4.Body.Close()
+
+	if s3Objects["/zerotrace-eu-vault/telemetry.parquet"] == 0 || s3Objects["/zerotrace-eu-vault/manifest.json"] == 0 {
+		t.Errorf("expected S3 uploads for telemetry.parquet and manifest.json, got %v", s3Objects)
+	}
 }

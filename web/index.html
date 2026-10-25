@@ -20,17 +20,17 @@
       <div>
         <div class="flex items-center gap-3">
           <span class="text-xl font-bold tracking-tight text-white">🛡️ ZEROTRACE</span>
-          <span class="text-xs px-2 py-0.5 rounded badge-ok">ZERO DATA EGRESS · E2EE</span>
+          <span class="text-xs px-2 py-0.5 rounded badge-ok">PARQUET + DUCKDB-WASM · ZERO EGRESS</span>
           <span class="text-xs text-slate-400">Gothenburg, Sweden 🇸🇪</span>
         </div>
-        <p class="text-xs text-slate-400 mt-1">Client-side telemetry console. Zero bytes touch ZeroTrace servers.</p>
+        <p class="text-xs text-slate-400 mt-1">Client-side telemetry console. Parquet queried in-browser via DuckDB-Wasm & decrypted via WebCrypto.</p>
       </div>
       <div class="flex flex-wrap items-center gap-3 text-xs">
         <div class="px-3 py-1.5 rounded bg-slate-900 border border-slate-800">
           Account: <span id="account-id" class="font-bold text-amber-400">1041 2547 6123 1433</span>
         </div>
-        <input id="endpoint-input" type="text" value="http://127.0.0.1:9000" class="px-3 py-1.5 rounded bg-slate-900 border border-slate-700 text-slate-200 w-48" placeholder="Agent / S3 URL" />
-        <button onclick="loadTelemetry()" class="px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold">Sync Vault</button>
+        <input id="endpoint-input" type="text" value="http://127.0.0.1:9000" class="px-3 py-1.5 rounded bg-slate-900 border border-slate-700 text-slate-200 w-52" placeholder="Agent or S3 Bucket URL" />
+        <button onclick="loadTelemetry()" class="px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold">Sync S3 / Parquet</button>
         <button onclick="window.print()" class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-semibold">Export EU AI Act PDF</button>
       </div>
     </header>
@@ -57,6 +57,22 @@
         <div id="kpi-chain" class="text-sm font-bold text-emerald-400 mt-2">✓ SHA-256 VERIFIED</div>
         <div id="kpi-digest" class="text-xs text-slate-500 mt-1 truncate">Head: —</div>
       </div>
+    </section>
+
+    <!-- DuckDB-Wasm Direct Parquet SQL Workbench -->
+    <section class="card rounded-lg p-5 space-y-3">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+          <h2 class="text-sm font-bold text-white">🦆 In-Browser DuckDB-Wasm Parquet SQL Engine</h2>
+          <span id="duckdb-status" class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300">Initializing DuckDB-Wasm...</span>
+        </div>
+        <span class="text-xs text-slate-400">Queries `telemetry.parquet` directly in browser memory via WebAssembly</span>
+      </div>
+      <div class="flex flex-col sm:flex-row gap-2">
+        <input id="sql-input" type="text" value="SELECT repo, model, status, COUNT(*) AS calls, ROUND(SUM(cost_usd), 5) AS spend_usd, ROUND(SUM(saved_usd), 5) AS saved_usd, SUM(pii_redactions) AS pii_masked FROM 'telemetry.parquet' GROUP BY repo, model, status ORDER BY calls DESC;" class="flex-1 px-3 py-2 rounded bg-slate-950 border border-slate-700 text-xs text-sky-300 font-mono" />
+        <button onclick="runDuckDBQuery()" class="px-4 py-2 rounded bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white whitespace-nowrap">Run Parquet SQL</button>
+      </div>
+      <pre id="sql-result" class="p-3 rounded bg-slate-950 border border-slate-800 text-xs text-emerald-300 overflow-x-auto max-h-48">Click "Run Parquet SQL" or "Sync S3 / Parquet" to execute columnar analytics over telemetry.parquet...</pre>
     </section>
 
     <!-- PII Breakdown & Client-Side Decryption Key -->
@@ -101,6 +117,67 @@
     </section>
   </div>
 
+  <script type="module">
+    import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
+
+    let db = null;
+    let conn = null;
+
+    async function initDuckDB() {
+      const statusEl = document.getElementById('duckdb-status');
+      try {
+        const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+        const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+        const workerUrl = URL.createObjectURL(
+          new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' })
+        );
+        const worker = new Worker(workerUrl);
+        const logger = new duckdb.ConsoleLogger();
+        db = new duckdb.AsyncDuckDB(logger, worker);
+        await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+        conn = await db.connect();
+        statusEl.textContent = '✓ DuckDB-Wasm Ready';
+        statusEl.className = 'text-xs px-2 py-0.5 rounded badge-ok';
+        await syncParquetToDuckDB();
+      } catch (err) {
+        statusEl.textContent = 'DuckDB-Wasm Offline (' + err.message + ')';
+      }
+    }
+
+    async function syncParquetToDuckDB() {
+      if (!db || !conn) return;
+      const base = document.getElementById('endpoint-input').value.replace(/\/$/, '');
+      try {
+        const res = await fetch(base + '/telemetry.parquet');
+        if (!res.ok) return;
+        const buf = new Uint8Array(await res.arrayBuffer());
+        await db.registerFileBuffer('telemetry.parquet', buf);
+        await window.runDuckDBQuery();
+      } catch (e) {
+        console.warn('Parquet fetch skipped:', e);
+      }
+    }
+
+    window.runDuckDBQuery = async function() {
+      const outEl = document.getElementById('sql-result');
+      if (!conn) {
+        outEl.textContent = 'DuckDB-Wasm is still initializing...';
+        return;
+      }
+      const sql = document.getElementById('sql-input').value;
+      try {
+        const arrowResult = await conn.query(sql);
+        const rows = arrowResult.toArray().map(r => r.toJSON());
+        outEl.textContent = JSON.stringify(rows, (_, v) => typeof v === 'bigint' ? Number(v) : v, 2);
+      } catch (err) {
+        outEl.textContent = 'SQL Error: ' + err.message;
+      }
+    };
+
+    window.syncParquetToDuckDB = syncParquetToDuckDB;
+    initDuckDB();
+  </script>
+
   <script>
     let currentManifest = null;
     let selectedCiphertext = "";
@@ -111,9 +188,11 @@
         const res = await fetch(base + '/api/manifest');
         currentManifest = await res.json();
         renderManifest(currentManifest);
+        if (window.syncParquetToDuckDB) {
+          await window.syncParquetToDuckDB();
+        }
       } catch (e) {
-        // Fallback embedded sample from live run if daemon isn't running
-        console.warn("Live daemon not reachable, showing cached snapshot", e);
+        console.warn("Live daemon not reachable", e);
       }
     }
 

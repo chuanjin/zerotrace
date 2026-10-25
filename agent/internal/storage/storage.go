@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -14,28 +15,30 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/parquet-go/parquet-go"
 )
 
 // AuditEvent represents a single immutable telemetry record compliant with EU AI Act Art. 12 & GDPR.
 type AuditEvent struct {
-	Seq               int64          `json:"seq"`
-	Timestamp         string         `json:"timestamp"`
-	SessionID         string         `json:"session_id"`
-	Provider          string         `json:"provider"`
-	Model             string         `json:"model"`
-	Repo              string         `json:"repo,omitempty"`
-	TokensIn          int            `json:"tokens_in"`
-	TokensCacheRead   int            `json:"tokens_cache_read"`
-	TokensOut         int            `json:"tokens_out"`
-	CostUSD           float64        `json:"cost_usd"`
-	SavedUSD          float64        `json:"saved_usd"` // Money saved when circuit breaker trips
-	LatencyMs         int64          `json:"latency_ms"`
-	Status            string         `json:"status"` // "OK", "DOOM_LOOP_DETECTED", "SESSION_BUDGET_EXCEEDED"
-	PIIRedactions     int            `json:"pii_redactions"`
-	PIICategories     map[string]int `json:"pii_categories,omitempty"`
-	EncryptedPayload  string         `json:"encrypted_payload"` // AES-256-GCM ciphertext (Zero-Knowledge)
-	PrevHash          string         `json:"prev_hash"`         // Cryptographic tamper-evident chain
-	EventHash         string         `json:"event_hash"`
+	Seq              int64          `json:"seq" parquet:"seq"`
+	Timestamp        string         `json:"timestamp" parquet:"timestamp"`
+	SessionID        string         `json:"session_id" parquet:"session_id"`
+	Provider         string         `json:"provider" parquet:"provider"`
+	Model            string         `json:"model" parquet:"model"`
+	Repo             string         `json:"repo,omitempty" parquet:"repo"`
+	TokensIn         int            `json:"tokens_in" parquet:"tokens_in"`
+	TokensCacheRead  int            `json:"tokens_cache_read" parquet:"tokens_cache_read"`
+	TokensOut        int            `json:"tokens_out" parquet:"tokens_out"`
+	CostUSD          float64        `json:"cost_usd" parquet:"cost_usd"`
+	SavedUSD         float64        `json:"saved_usd" parquet:"saved_usd"` // Money saved when circuit breaker trips
+	LatencyMs        int64          `json:"latency_ms" parquet:"latency_ms"`
+	Status           string         `json:"status" parquet:"status"` // "OK", "DOOM_LOOP_DETECTED", "SESSION_BUDGET_EXCEEDED"
+	PIIRedactions    int            `json:"pii_redactions" parquet:"pii_redactions"`
+	PIICategories    map[string]int `json:"pii_categories,omitempty" parquet:"-"`
+	EncryptedPayload string         `json:"encrypted_payload" parquet:"encrypted_payload"` // AES-256-GCM ciphertext (Zero-Knowledge)
+	PrevHash         string         `json:"prev_hash" parquet:"prev_hash"`                 // Cryptographic tamper-evident chain
+	EventHash        string         `json:"event_hash" parquet:"event_hash"`
 }
 
 type Manifest struct {
@@ -49,6 +52,8 @@ type Manifest struct {
 	PIICategoryBreakdown map[string]int `json:"pii_category_breakdown"`
 	ChainHeadHash        string         `json:"chain_head_hash"`
 	ChainVerified        bool           `json:"chain_verified"`
+	LatestParquetFile    string         `json:"latest_parquet_file"`
+	S3Synced             bool           `json:"s3_synced"`
 	RecentEvents         []AuditEvent   `json:"recent_events"`
 }
 
@@ -60,6 +65,8 @@ type Store struct {
 	seq       int64
 	prevHash  string
 	manifest  Manifest
+	allEvents []AuditEvent
+	s3Client  *S3Client
 }
 
 func New(dataDir, accountID, e2eeKeyHex string) (*Store, error) {
@@ -87,6 +94,12 @@ func New(dataDir, accountID, e2eeKeyHex string) (*Store, error) {
 	return s, nil
 }
 
+func (s *Store) SetS3Client(c *S3Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.s3Client = c
+}
+
 func (s *Store) loadExisting() {
 	mPath := filepath.Join(s.dataDir, "manifest.json")
 	if data, err := os.ReadFile(mPath); err == nil {
@@ -97,6 +110,18 @@ func (s *Store) loadExisting() {
 		s.seq = s.manifest.TotalRequests
 		if s.manifest.ChainHeadHash != "" {
 			s.prevHash = s.manifest.ChainHeadHash
+		}
+	}
+	// Load existing JSONL events so Parquet snapshots contain the full day's dataset
+	files, _ := filepath.Glob(filepath.Join(s.dataDir, "audit-*.jsonl"))
+	for _, file := range files {
+		if raw, err := os.ReadFile(file); err == nil {
+			for _, line := range splitNonEmptyLines(string(raw)) {
+				var ev AuditEvent
+				if err := json.Unmarshal([]byte(line), &ev); err == nil {
+					s.allEvents = append(s.allEvents, ev)
+				}
+			}
 		}
 	}
 }
@@ -126,6 +151,19 @@ func ComputeEventHash(ev AuditEvent) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// buildParquetBytes serializes AuditEvents into an Apache Parquet v2 columnar byte slice.
+func buildParquetBytes(events []AuditEvent) ([]byte, error) {
+	var buf bytes.Buffer
+	writer := parquet.NewGenericWriter[AuditEvent](&buf, parquet.Compression(&parquet.Snappy))
+	if _, err := writer.Write(events); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 func (s *Store) Append(ev AuditEvent, rawSanitizedPrompt string) (AuditEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,8 +177,9 @@ func (s *Store) Append(ev AuditEvent, rawSanitizedPrompt string) (AuditEvent, er
 	ev.PrevHash = s.prevHash
 	ev.EventHash = ComputeEventHash(ev)
 	s.prevHash = ev.EventHash
+	s.allEvents = append(s.allEvents, ev)
 
-	// Append to daily JSONL / Parquet staging log
+	// 1. Append to daily JSONL log
 	day := time.Now().UTC().Format("2006-01-02")
 	logPath := filepath.Join(s.dataDir, fmt.Sprintf("audit-%s.jsonl", day))
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -151,7 +190,17 @@ func (s *Store) Append(ev AuditEvent, rawSanitizedPrompt string) (AuditEvent, er
 	_, _ = f.Write(append(line, '\n'))
 	_ = f.Close()
 
-	// Update manifest
+	// 2. Write columnar Apache Parquet file (`telemetry.parquet` & daily partition)
+	parquetRel := fmt.Sprintf("dt=%s/audit-%s.parquet", day, day)
+	parquetBytes, pErr := buildParquetBytes(s.allEvents)
+	if pErr == nil {
+		_ = os.MkdirAll(filepath.Join(s.dataDir, "dt="+day), 0700)
+		_ = os.WriteFile(filepath.Join(s.dataDir, parquetRel), parquetBytes, 0600)
+		_ = os.WriteFile(filepath.Join(s.dataDir, "telemetry.parquet"), parquetBytes, 0600)
+		s.manifest.LatestParquetFile = "telemetry.parquet"
+	}
+
+	// 3. Update manifest
 	s.manifest.UpdatedAt = ev.Timestamp
 	s.manifest.TotalRequests = s.seq
 	s.manifest.TotalCostUSD += ev.CostUSD
@@ -169,8 +218,18 @@ func (s *Store) Append(ev AuditEvent, rawSanitizedPrompt string) (AuditEvent, er
 		s.manifest.RecentEvents = s.manifest.RecentEvents[:50]
 	}
 
+	// 4. Optional BYOC S3 / Cloudflare R2 direct upload (Zero-Knowledge)
+	if s.s3Client != nil && s.s3Client.Enabled() && len(parquetBytes) > 0 {
+		err1 := s.s3Client.PutObject("telemetry.parquet", "application/vnd.apache.parquet", parquetBytes)
+		err2 := s.s3Client.PutObject(parquetRel, "application/vnd.apache.parquet", parquetBytes)
+		s.manifest.S3Synced = (err1 == nil && err2 == nil)
+	}
+
 	mBytes, _ := json.MarshalIndent(s.manifest, "", "  ")
 	_ = os.WriteFile(filepath.Join(s.dataDir, "manifest.json"), mBytes, 0600)
+	if s.s3Client != nil && s.s3Client.Enabled() {
+		_ = s.s3Client.PutObject("manifest.json", "application/json", mBytes)
+	}
 
 	return ev, nil
 }
@@ -179,6 +238,16 @@ func (s *Store) GetManifest() Manifest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.manifest
+}
+
+func (s *Store) GetParquetBytes() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pPath := filepath.Join(s.dataDir, "telemetry.parquet")
+	if b, err := os.ReadFile(pPath); err == nil {
+		return b, nil
+	}
+	return buildParquetBytes(s.allEvents)
 }
 
 // VerifyAuditChain walks all audit-*.jsonl files and verifies cryptographic SHA-256 continuity.
