@@ -56,34 +56,42 @@ curl -fsSL https://raw.githubusercontent.com/chuanjin/zerotrace/main/install.sh 
 
 *(Or build from source with Go 1.22+: `./install.sh`)*
 
-### 2. Initialize Anonymous Account & Guardrails
+### 2. Initialize Anonymous Account & Daemon
 
 ```bash
 zerotrace init
+zerotrace daemon install   # Starts background service (systemd --user on Linux / launchd on macOS)
+zerotrace hook install     # Injects proxy exports into ~/.zshrc / ~/.bashrc automatically
 ```
 
 Generates a Mullvad-style 16-digit anonymous Account ID, a local 256-bit `AES-256-GCM` encryption key, and default budget/loop guardrails in `~/.zerotrace/config.json`.
 
-### 3. Point Your AI Agents at ZeroTrace
+### 3. Start Hacking (Claude Code / Cursor / OpenAI)
 
-```bash
-zerotrace serve &
-
-export ANTHROPIC_BASE_URL="http://127.0.0.1:9000/anthropic"
-export OPENAI_BASE_URL="http://127.0.0.1:9000/openai"
-```
+Open a new shell or run `source ~/.zshrc`. All LLM calls now flow through your local zero-knowledge proxy:
+- **Claude Code**: Works out of the box with `ANTHROPIC_BASE_URL="http://127.0.0.1:9000/anthropic"`.
+- **OpenAI / Cursor**: Routed via `OPENAI_BASE_URL="http://127.0.0.1:9000/openai"`.
 
 ### 4. Inspect Spend, Saved Loop Costs & Verify Audit Chain
 
 ```bash
-zerotrace status
-zerotrace verify
-zerotrace export-compliance
+zerotrace status             # Terminal summary table (spend, loop savings, PII counts)
+zerotrace verify             # Cryptographic SHA-256 chain verification
+zerotrace export-compliance  # Export EU AI Act Art. 12 & GDPR compliance bundle
 ```
 
 ---
 
-## Optional: BYOC S3 / Cloudflare R2 + DuckDB-Wasm Console
+## Zero-Knowledge Web Console (DuckDB-Wasm)
+
+Open `web/index.html` in your browser. It connects to your local agent at `http://127.0.0.1:9000` (or your remote S3 bucket):
+- **DuckDB-Wasm in browser**: Queries `telemetry.parquet` directly in browser memory without sending a single byte to our servers.
+- **Client-Side AES Decryption**: Paste your local key from `~/.zerotrace/config.json` to decrypt prompts on your machine.
+- **1-Click PDF**: Print an audit-ready compliance document.
+
+---
+
+## Optional: BYOC S3 / Cloudflare R2 Sync
 
 Sync your encrypted columnar Parquet logs directly to your own object storage bucket with one command (automatically provisions bucket & browser `Range` CORS headers):
 
