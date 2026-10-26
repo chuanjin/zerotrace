@@ -13,6 +13,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -148,10 +150,39 @@ func (s *Store) EncryptPayload(plaintext string) string {
 	return base64.StdEncoding.EncodeToString(sealed)
 }
 
+func formatCategories(cats map[string]int) string {
+	if len(cats) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(cats))
+	for k := range cats {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s=%d", k, cats[k])
+	}
+	return strings.Join(parts, ",")
+}
+
+// ComputeEventHash computes a canonical deterministic SHA-256 digest covering all business,
+// metadata, cost, token, payload, and chaining fields of an AuditEvent.
 func ComputeEventHash(ev AuditEvent) string {
-	canonical := fmt.Sprintf("%d|%s|%s|%s|%s|%d|%d|%.6f|%s|%d|%s",
-		ev.Seq, ev.Timestamp, ev.SessionID, ev.Provider, ev.Model,
-		ev.TokensIn, ev.TokensOut, ev.CostUSD, ev.Status, ev.PIIRedactions, ev.PrevHash)
+	churn := "0"
+	if ev.CacheChurnAlert {
+		churn = "1"
+	}
+	canonical := fmt.Sprintf(
+		"seq=%d\nts=%s\nsess=%s\nprov=%s\nmodel=%s\nrepo=%s\n"+
+			"tin=%d\ntcr=%d\ntcw=%d\ntout=%d\n"+
+			"cost=%.6f\nsaved=%.6f\nwasted=%.6f\nchurn=%s\nlat=%d\n"+
+			"status=%s\npii_cnt=%d\npii_cats=%s\npayload=%s\nprev=%s",
+		ev.Seq, ev.Timestamp, ev.SessionID, ev.Provider, ev.Model, ev.Repo,
+		ev.TokensIn, ev.TokensCacheRead, ev.TokensCacheWrite, ev.TokensOut,
+		ev.CostUSD, ev.SavedUSD, ev.CacheWastedUSD, churn, ev.LatencyMs,
+		ev.Status, ev.PIIRedactions, formatCategories(ev.PIICategories), ev.EncryptedPayload, ev.PrevHash,
+	)
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])
 }
