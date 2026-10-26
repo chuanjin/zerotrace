@@ -29,15 +29,15 @@ type AuditEvent struct {
 	Provider         string         `json:"provider" parquet:"provider"`
 	Model            string         `json:"model" parquet:"model"`
 	Repo             string         `json:"repo,omitempty" parquet:"repo"`
-	TokensIn          int            `json:"tokens_in" parquet:"tokens_in"`
-	TokensCacheRead   int            `json:"tokens_cache_read" parquet:"tokens_cache_read"`
-	TokensCacheWrite  int            `json:"tokens_cache_write" parquet:"tokens_cache_write"`
-	TokensOut         int            `json:"tokens_out" parquet:"tokens_out"`
-	CostUSD           float64        `json:"cost_usd" parquet:"cost_usd"`
-	SavedUSD          float64        `json:"saved_usd" parquet:"saved_usd"`           // Money saved when circuit breaker trips
-	CacheWastedUSD    float64        `json:"cache_wasted_usd" parquet:"cache_wasted_usd"` // Extra cost caused by cache churn/rebuild
-	CacheChurnAlert   bool           `json:"cache_churn_alert" parquet:"cache_churn_alert"`
-	LatencyMs         int64          `json:"latency_ms" parquet:"latency_ms"`
+	TokensIn         int            `json:"tokens_in" parquet:"tokens_in"`
+	TokensCacheRead  int            `json:"tokens_cache_read" parquet:"tokens_cache_read"`
+	TokensCacheWrite int            `json:"tokens_cache_write" parquet:"tokens_cache_write"`
+	TokensOut        int            `json:"tokens_out" parquet:"tokens_out"`
+	CostUSD          float64        `json:"cost_usd" parquet:"cost_usd"`
+	SavedUSD         float64        `json:"saved_usd" parquet:"saved_usd"`               // Money saved when circuit breaker trips
+	CacheWastedUSD   float64        `json:"cache_wasted_usd" parquet:"cache_wasted_usd"` // Extra cost caused by cache churn/rebuild
+	CacheChurnAlert  bool           `json:"cache_churn_alert" parquet:"cache_churn_alert"`
+	LatencyMs        int64          `json:"latency_ms" parquet:"latency_ms"`
 	Status           string         `json:"status" parquet:"status"` // "OK", "DOOM_LOOP_DETECTED", "SESSION_BUDGET_EXCEEDED"
 	PIIRedactions    int            `json:"pii_redactions" parquet:"pii_redactions"`
 	PIICategories    map[string]int `json:"pii_categories,omitempty" parquet:"-"`
@@ -121,6 +121,7 @@ func (s *Store) loadExisting() {
 	}
 	// Load existing JSONL events so Parquet snapshots contain the full day's dataset
 	files, _ := filepath.Glob(filepath.Join(s.dataDir, "audit-*.jsonl"))
+	sort.Strings(files) // Glob order is not guaranteed; sort for deterministic chain replay
 	for _, file := range files {
 		if raw, err := os.ReadFile(file); err == nil {
 			for _, line := range splitNonEmptyLines(string(raw)) {
@@ -296,6 +297,7 @@ func VerifyAuditChain(dataDir string) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
+	sort.Strings(files) // Glob order is not guaranteed; sort for deterministic chain verification
 	expectedPrev := "0000000000000000000000000000000000000000000000000000000000000000"
 	count := 0
 	for _, file := range files {
