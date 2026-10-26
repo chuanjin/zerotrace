@@ -42,6 +42,12 @@ func modelRates(model string) (inRate, outRate float64) {
 	switch {
 	case strings.Contains(m, "opus"):
 		inRate, outRate = 15.0, 75.0
+	case strings.Contains(m, "deepseek-reasoner") || strings.Contains(m, "deepseek-r1"):
+		inRate, outRate = 0.55, 2.19
+	case strings.Contains(m, "deepseek-chat") || strings.Contains(m, "deepseek-v3"):
+		inRate, outRate = 0.14, 0.28
+	case strings.Contains(m, "gemini-2.0") || strings.Contains(m, "gemini-1.5-pro"):
+		inRate, outRate = 1.25, 5.00
 	case strings.Contains(m, "haiku") || strings.Contains(m, "mini") || strings.Contains(m, "flash"):
 		inRate, outRate = 0.30, 1.20
 	case strings.Contains(m, "gpt-4") || strings.Contains(m, "o3"):
@@ -73,6 +79,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/verify", s.handleVerify)
 	mux.HandleFunc("/anthropic/", s.handleProxy("anthropic"))
 	mux.HandleFunc("/openai/", s.handleProxy("openai"))
+	mux.HandleFunc("/deepseek/", s.handleProxy("deepseek"))
+	mux.HandleFunc("/gemini/", s.handleProxy("gemini"))
 	// Also handle root /v1/messages and /v1/chat/completions directly for zero-config base URLs
 	mux.HandleFunc("/v1/messages", s.handleProxy("anthropic"))
 	mux.HandleFunc("/v1/chat/completions", s.handleProxy("openai"))
@@ -228,6 +236,12 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 			if provider == "openai" {
 				upstreamBase = s.cfg.UpstreamOpenAI
 				targetPath = strings.TrimPrefix(r.URL.Path, "/openai")
+			} else if provider == "deepseek" {
+				upstreamBase = s.cfg.UpstreamDeepSeek
+				targetPath = strings.TrimPrefix(r.URL.Path, "/deepseek")
+			} else if provider == "gemini" {
+				upstreamBase = s.cfg.UpstreamGemini
+				targetPath = strings.TrimPrefix(r.URL.Path, "/gemini")
 			}
 			targetURL := strings.TrimRight(upstreamBase, "/") + targetPath
 			upReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader([]byte(sanitizedBody)))

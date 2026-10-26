@@ -14,6 +14,8 @@ type Config struct {
 	ListenAddr         string      `json:"listen_addr"`
 	UpstreamAnthropic  string      `json:"upstream_anthropic"`
 	UpstreamOpenAI     string      `json:"upstream_openai"`
+	UpstreamDeepSeek   string      `json:"upstream_deepseek"`
+	UpstreamGemini     string      `json:"upstream_gemini"`
 	DataDir            string      `json:"data_dir"`
 	HMACSecret         string      `json:"hmac_secret"`          // Local secret for deterministic PII pseudonymization
 	E2EEKey            string      `json:"e2ee_key"`             // Client-side encryption key for prompt payloads
@@ -77,6 +79,8 @@ func DefaultConfig() *Config {
 		ListenAddr:         "127.0.0.1:9000",
 		UpstreamAnthropic:  "https://api.anthropic.com",
 		UpstreamOpenAI:     "https://api.openai.com",
+		UpstreamDeepSeek:   "https://api.deepseek.com",
+		UpstreamGemini:     "https://generativelanguage.googleapis.com",
 		DataDir:            filepath.Join(base, "data"),
 		HMACSecret:         GenerateRandomHex(32),
 		E2EEKey:            GenerateRandomHex(32),
