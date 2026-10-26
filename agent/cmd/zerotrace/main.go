@@ -57,12 +57,12 @@ func runInit() {
 		os.Exit(1)
 	}
 	fmt.Println("┌──────────────────────────────────────────────────────────────────┐")
-	fmt.Println("│  ZeroTrace Setup — Zero-Knowledge AI & Cloud FinOps Proxy 🇸🇪     │")
+	fmt.Println("│  ZeroTrace Setup — Privacy Firewall for AI Coding Agents 🇸🇪      │")
 	fmt.Println("└──────────────────────────────────────────────────────────────────┘")
 	fmt.Printf("  ✓ Account Number : %s (Anonymous 16-digit ID)\n", cfg.AccountID)
 	fmt.Printf("  ✓ Local Vault    : %s\n", cfg.DataDir)
 	fmt.Printf("  ✓ E2EE Key       : %s... (AES-256-GCM local key)\n", cfg.E2EEKey[:12])
-	fmt.Printf("  ✓ GDPR Scrubbing : Enabled (SE Personnummer, IBAN, Email, API Keys)\n")
+	fmt.Printf("  ✓ PII Scrubbing  : Enabled (SE Personnummer, IBAN, Email, API Keys)\n")
 	fmt.Printf("  ✓ Circuit Breaker: Max %d identical retries | $%.2f/session | $%.2f/day\n",
 		cfg.Guardrails.MaxIdenticalRetries, cfg.Guardrails.MaxSessionCostUSD, cfg.Guardrails.MaxDailyCostUSD)
 	fmt.Println()
@@ -92,7 +92,7 @@ func runServe() {
 		fmt.Printf("☁️  BYOC S3/R2 Direct Parquet Sync Enabled -> %s/%s\n", cfg.Storage.Endpoint, cfg.Storage.Bucket)
 	}
 	srv := proxy.NewServer(cfg, m, b, st)
-	fmt.Printf("🛡️  ZeroTrace Agent %s listening on http://%s (Account: %s)\n", version, cfg.ListenAddr, cfg.AccountID)
+	fmt.Printf("🛡️  ZeroTrace Privacy Firewall %s listening on http://%s (Account: %s)\n", version, cfg.ListenAddr, cfg.AccountID)
 	if err := http.ListenAndServe(cfg.ListenAddr, srv.Handler()); err != nil {
 		fmt.Fprintf(os.Stderr, "Server stopped: %v\n", err)
 		os.Exit(1)
@@ -325,7 +325,7 @@ func runUninstall() {
 }
 
 func printHelp() {
-	fmt.Println("ZeroTrace — Zero-Knowledge AI Gateway & FinOps Controller")
+	fmt.Println("ZeroTrace — Privacy Firewall for AI Coding Agents")
 	fmt.Println("\nUsage:")
 	fmt.Println("  zerotrace init               Initialize anonymous Account ID, E2EE keys & guardrails")
 	fmt.Println("  zerotrace daemon install     Register and start background service (systemd/launchd)")
@@ -333,9 +333,9 @@ func printHelp() {
 	fmt.Println("  zerotrace hook install       Automatically inject proxy exports into ~/.zshrc / ~/.bashrc")
 	fmt.Println("  zerotrace hook uninstall     Cleanly strip proxy exports from shell profiles")
 	fmt.Println("  zerotrace s3-setup           Configure BYOC S3/R2 bucket and DuckDB-Wasm CORS policy")
-	fmt.Println("  zerotrace serve              Start local GDPR-scrubbing & circuit-breaking proxy (:9000)")
+	fmt.Println("  zerotrace serve              Start local privacy de-identification proxy (:9000)")
 	fmt.Println("  zerotrace status             Display real-time spend, saved loop costs & PII redactions")
 	fmt.Println("  zerotrace verify             Verify SHA-256 cryptographic integrity of audit logs")
-	fmt.Println("  zerotrace export-compliance  Generate EU AI Act Art. 12 & GDPR compliance evidence JSON")
+	fmt.Println("  zerotrace export-compliance  Generate verifiable tamper-evident audit evidence JSON")
 	fmt.Println("  zerotrace uninstall          Cleanly remove daemon, hooks, local config and restore direct API routing")
 }
