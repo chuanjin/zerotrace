@@ -10,7 +10,7 @@ import (
 )
 
 type Config struct {
-	AccountID          string      `json:"account_id"` // Mullvad-style 16-digit ID
+	AccountID          string      `json:"account_id"` // Anonymous 16-digit ID
 	ListenAddr         string      `json:"listen_addr"`
 	UpstreamAnthropic  string      `json:"upstream_anthropic"`
 	UpstreamOpenAI     string      `json:"upstream_openai"`

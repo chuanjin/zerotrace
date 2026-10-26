@@ -59,7 +59,7 @@ func runInit() {
 	fmt.Println("┌──────────────────────────────────────────────────────────────────┐")
 	fmt.Println("│  ZeroTrace Setup — Zero-Knowledge AI & Cloud FinOps Proxy 🇸🇪     │")
 	fmt.Println("└──────────────────────────────────────────────────────────────────┘")
-	fmt.Printf("  ✓ Account Number : %s (Mullvad-style anonymous ID)\n", cfg.AccountID)
+	fmt.Printf("  ✓ Account Number : %s (Anonymous 16-digit ID)\n", cfg.AccountID)
 	fmt.Printf("  ✓ Local Vault    : %s\n", cfg.DataDir)
 	fmt.Printf("  ✓ E2EE Key       : %s... (AES-256-GCM local key)\n", cfg.E2EEKey[:12])
 	fmt.Printf("  ✓ GDPR Scrubbing : Enabled (SE Personnummer, IBAN, Email, API Keys)\n")
@@ -325,7 +325,7 @@ func runUninstall() {
 }
 
 func printHelp() {
-	fmt.Println("ZeroTrace — The Mullvad of AI & Cloud Observability (€10/mo flat, Zero Data Egress)")
+	fmt.Println("ZeroTrace — Zero-Knowledge AI Gateway & FinOps Controller")
 	fmt.Println("\nUsage:")
 	fmt.Println("  zerotrace init               Initialize anonymous Account ID, E2EE keys & guardrails")
 	fmt.Println("  zerotrace daemon install     Register and start background service (systemd/launchd)")
