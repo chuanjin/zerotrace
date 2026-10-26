@@ -138,6 +138,50 @@ func (b *Breaker) EvaluatePreCall(sessionID, payload string, estCostUSD float64)
 	}
 }
 
+// SettlePostCall reconciles reserved estimated cost against actual measured cost after request completion.
+func (b *Breaker) SettlePostCall(sessionID string, estCostUSD, actualCostUSD float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	diff := actualCostUSD - estCostUSD
+	if sessionID == "" {
+		sessionID = "default-session"
+	}
+	if st, ok := b.sessions[sessionID]; ok {
+		st.TotalCostUSD += diff
+		if st.TotalCostUSD < 0 {
+			st.TotalCostUSD = 0
+		}
+	}
+	b.dailyCostUSD += diff
+	if b.dailyCostUSD < 0 {
+		b.dailyCostUSD = 0
+	}
+}
+
+// ReleasePreCall reverses the reserved estimated budget when a request aborts or fails upstream before completion.
+func (b *Breaker) ReleasePreCall(sessionID string, estCostUSD float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if sessionID == "" {
+		sessionID = "default-session"
+	}
+	if st, ok := b.sessions[sessionID]; ok {
+		st.TotalCostUSD -= estCostUSD
+		if st.TotalCostUSD < 0 {
+			st.TotalCostUSD = 0
+		}
+		if st.TotalCalls > 0 {
+			st.TotalCalls--
+		}
+	}
+	b.dailyCostUSD -= estCostUSD
+	if b.dailyCostUSD < 0 {
+		b.dailyCostUSD = 0
+	}
+}
+
 // EvaluateCacheChurn inspects post-call cache_creation_input_tokens vs cache_read_input_tokens.
 // If a session repeatedly writes large caches without reading them (Cache Busting / Silent Creep),
 // it flags a Cache Churn Alert and returns the wasted USD compared to a cache hit.

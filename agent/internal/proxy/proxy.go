@@ -291,6 +291,7 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 			targetURL := strings.TrimRight(upstreamBase, "/") + targetPath
 			upReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader([]byte(sanitizedBody)))
 			if err != nil {
+				s.breaker.ReleasePreCall(sessionID, estCost)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -303,11 +304,15 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 			}
 			upResp, err := s.client.Do(upReq)
 			if err != nil {
+				s.breaker.ReleasePreCall(sessionID, estCost)
 				http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 				return
 			}
 			defer upResp.Body.Close()
 			statusCode = upResp.StatusCode
+			if statusCode >= 500 {
+				s.breaker.ReleasePreCall(sessionID, estCost)
+			}
 
 			isSSE := isStream || strings.Contains(strings.ToLower(upResp.Header.Get("Content-Type")), "text/event-stream")
 			if isSSE {
@@ -356,6 +361,9 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 				inRate, _ := modelRates(model)
 				churnAlert, wastedUSD := s.breaker.EvaluateCacheChurn(sessionID, cacheReadTokens, cacheWriteTokens, uncachedInTokens, inRate)
 				actualCost := estimateCostWithCache(model, uncachedInTokens, cacheReadTokens, cacheWriteTokens, tokensOut)
+				if statusCode < 500 {
+					s.breaker.SettlePostCall(sessionID, estCost, actualCost)
+				}
 
 				_, _ = s.store.Append(storage.AuditEvent{
 					SessionID:        sessionID,
@@ -388,6 +396,9 @@ func (s *Server) handleProxy(provider string) http.HandlerFunc {
 		inRate, _ := modelRates(model)
 		churnAlert, wastedUSD := s.breaker.EvaluateCacheChurn(sessionID, cacheReadTokens, cacheWriteTokens, uncachedInTokens, inRate)
 		actualCost := estimateCostWithCache(model, uncachedInTokens, cacheReadTokens, cacheWriteTokens, tokensOut)
+		if statusCode < 500 {
+			s.breaker.SettlePostCall(sessionID, estCost, actualCost)
+		}
 
 		// 4. Append Zero-Knowledge Encrypted + SHA-256 Chained Audit Event
 		ev, _ := s.store.Append(storage.AuditEvent{
