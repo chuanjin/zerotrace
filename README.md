@@ -1,6 +1,6 @@
 # 🛡️ ZeroTrace
 
-**The Mullvad of AI & Cloud Observability.**  
+**The Zero-Knowledge AI Gateway & FinOps Controller.**  
 *Zero-Knowledge GDPR Proxy · Active Doom-Loop Circuit Breaker · BYOC S3 Parquet + DuckDB-Wasm Console*  
 Built in Gothenburg, Sweden 🇸🇪
 
@@ -64,7 +64,7 @@ zerotrace daemon install   # Starts background service (systemd --user on Linux 
 zerotrace hook install     # Injects proxy exports into ~/.zshrc / ~/.bashrc automatically
 ```
 
-Generates a Mullvad-style 16-digit anonymous Account ID, a local 256-bit `AES-256-GCM` encryption key, and default budget/loop guardrails in `~/.zerotrace/config.json`.
+Generates a privacy-first 16-digit anonymous Account ID, a local 256-bit `AES-256-GCM` encryption key, and default budget/loop guardrails in `~/.zerotrace/config.json`.
 
 ### 3. Start Hacking (Claude Code / Cursor / OpenAI)
 
