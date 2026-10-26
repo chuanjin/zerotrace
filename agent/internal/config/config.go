@@ -20,6 +20,8 @@ type Config struct {
 	HMACSecret         string      `json:"hmac_secret"`          // Local secret for deterministic PII pseudonymization
 	E2EEKey            string      `json:"e2ee_key"`             // Client-side encryption key for prompt payloads
 	GDPRMaskingEnabled bool        `json:"gdpr_masking_enabled"` // Deterministic EU PII scrubbing
+	AllowedOrigins     []string    `json:"allowed_origins,omitempty"` // Explicitly allowed browser CORS origins
+	APIToken           string      `json:"api_token,omitempty"`       // Optional bearer token for securing local API
 	Guardrails         Guardrails  `json:"guardrails"`
 	Storage            StorageConf `json:"storage"`
 }

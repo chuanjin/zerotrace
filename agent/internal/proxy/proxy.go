@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -84,19 +85,63 @@ func (s *Server) Handler() http.Handler {
 	// Also handle root /v1/messages and /v1/chat/completions directly for zero-config base URLs
 	mux.HandleFunc("/v1/messages", s.handleProxy("anthropic"))
 	mux.HandleFunc("/v1/chat/completions", s.handleProxy("openai"))
-	return enableCORS(mux)
+	return s.securityMiddleware(mux)
 }
 
-func enableCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, Authorization, x-api-key, anthropic-version, X-ZeroTrace-Session, X-ZeroTrace-Repo")
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, ETag")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+func (s *Server) isOriginAllowed(origin string) bool {
+	if origin == "" || origin == "null" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err == nil {
+		h := u.Hostname()
+		if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]" {
+			return true
 		}
+	}
+	for _, ao := range s.cfg.AllowedOrigins {
+		if ao == "*" || strings.EqualFold(ao, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) securityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if !s.isOriginAllowed(origin) {
+				http.Error(w, `{"error":"cross-origin request forbidden from untrusted origin"}`, http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, Authorization, x-api-key, anthropic-version, X-ZeroTrace-Session, X-ZeroTrace-Repo, X-ZeroTrace-Token")
+			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, ETag, X-ZeroTrace-Event-Hash, X-ZeroTrace-Redactions, X-ZeroTrace-Breaker")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+
+		if s.cfg.APIToken != "" && r.URL.Path != "/health" {
+			token := r.Header.Get("X-ZeroTrace-Token")
+			if token == "" {
+				auth := r.Header.Get("Authorization")
+				if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+					token = strings.TrimSpace(auth[7:])
+				}
+			}
+			if token != s.cfg.APIToken {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "unauthorized: invalid or missing zero-trace API token"})
+				return
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
